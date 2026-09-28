@@ -1,5 +1,5 @@
 // Service worker: network-first app & data (works offline from cache), cache-first hero/item images.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = `shell-${VERSION}`;
 const DATA = 'data';
 const IMAGES = 'images';
@@ -14,7 +14,7 @@ self.addEventListener('install', (e) => {
     const c = await caches.open(SHELL);
     await c.addAll(SHELL_FILES);
     const d = await caches.open(DATA);
-    await Promise.all(['data/heroes.json', 'data/matchups.json'].map((u) => d.add(u).catch(() => {})));
+    await Promise.all(['data/heroes.json', 'data/matchups-all.json', 'data/matchups.json'].map((u) => d.add(u).catch(() => {})));
     self.skipWaiting();
   })());
 });

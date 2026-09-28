@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-// Builds the static data files used by the app from the public OpenDota API.
+// Builds the static data files used by the app from the OpenDota and STRATZ APIs.
 // Usage: node scripts/build-data.mjs [--skip-matchups]
 // Runs daily from .github/workflows/update-data.yml so the app always shows the current patch.
+// STRATZ_TOKEN (env var, GitHub secret, or a local gitignored .env file) enables the large
+// per-bracket matchup + synergy data; without it only OpenDota's high-level matchups are built.
 
 import { writeFile, mkdir, readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +15,18 @@ const OUT = path.join(ROOT, 'data');
 const API = 'https://api.opendota.com/api';
 const SKIP_MATCHUPS = process.argv.includes('--skip-matchups');
 const API_KEY = process.env.OPENDOTA_API_KEY ? `?api_key=${process.env.OPENDOTA_API_KEY}` : '';
+
+// Load a local .env (never committed) so secrets stay out of the repository.
+if (existsSync(path.join(ROOT, '.env'))) {
+  for (const line of readFileSync(path.join(ROOT, '.env'), 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+  }
+}
+const STRATZ_TOKEN = process.env.STRATZ_TOKEN || '';
+
+// STRATZ bracket groups -> output file suffix. 'all' has no bracket filter.
+const STRATZ_BRACKETS = { all: null, hg: 'HERALD_GUARDIAN', ca: 'CRUSADER_ARCHON', la: 'LEGEND_ANCIENT', di: 'DIVINE_IMMORTAL' };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -29,6 +43,42 @@ async function get(endpoint, tries = 5) {
     }
   }
   throw new Error(`Failed: ${endpoint}`);
+}
+
+async function stratz(query, tries = 4) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch('https://api.stratz.com/graphql', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${STRATZ_TOKEN}`, 'User-Agent': 'STRATZ_API', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      if (res.status === 429) { await sleep(10000 * (i + 1)); continue; }
+      if (!res.ok) throw new Error(`STRATZ ${res.status}`);
+      const body = await res.json();
+      if (body.errors?.length) throw new Error(`STRATZ: ${body.errors[0].message}`);
+      return body.data;
+    } catch (err) {
+      if (i === tries - 1) throw err;
+      await sleep(3000 * (i + 1));
+    }
+  }
+  throw new Error('STRATZ: failed');
+}
+
+// { heroId: { v: { enemyId: [games, wins] }, w: { allyId: [games, wins] } } }
+async function stratzMatchups(bracket) {
+  const filter = bracket ? `, bracketBasicIds: [${bracket}]` : '';
+  const data = await stratz(`{ heroStats { matchUp(take: 150${filter}) {
+    heroId vs { heroId2 matchCount winCount } with { heroId2 matchCount winCount } } } }`);
+  const out = {};
+  for (const h of data.heroStats.matchUp) {
+    if (!h.heroId) continue;
+    const pack = (rows) => Object.fromEntries(rows.filter((r) => r.matchCount > 0).map((r) => [r.heroId2, [r.matchCount, r.winCount]]));
+    out[h.heroId] = { v: pack(h.vs || []), w: pack(h.with || []) };
+  }
+  if (Object.keys(out).length < 100) throw new Error(`STRATZ returned only ${Object.keys(out).length} heroes`);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,14 +248,39 @@ async function main() {
     updated: new Date().toISOString(),
     heroCount: heroes.length,
     source: 'OpenDota API (https://www.opendota.com)',
+    matchupSource: 'opendota',
+    brackets: [],
   };
+
+  if (STRATZ_TOKEN && !SKIP_MATCHUPS) {
+    try {
+      const v = await stratz('{ constants { gameVersions { name asOfDateTime } } }');
+      const latest = [...v.constants.gameVersions].sort((a, b) => b.asOfDateTime - a.asOfDateTime)[0];
+      if (latest?.name) meta.patch = latest.name;
+      for (const [suffix, bracket] of Object.entries(STRATZ_BRACKETS)) {
+        console.log(`Fetching STRATZ matchups (${bracket || 'all brackets'})…`);
+        const matchups = await stratzMatchups(bracket);
+        await writeFile(path.join(OUT, `matchups-${suffix}.json`), JSON.stringify({ updated: meta.updated, bracket: bracket || 'ALL', matchups }));
+        meta.brackets.push(suffix);
+        await sleep(1500);
+      }
+      meta.matchupSource = 'stratz';
+      meta.source = 'OpenDota API + STRATZ API';
+    } catch (err) {
+      console.warn(`STRATZ failed, keeping OpenDota matchups only: ${err.message}`);
+      meta.brackets = [];
+    }
+  } else if (!STRATZ_TOKEN) {
+    console.log('No STRATZ_TOKEN: skipping per-bracket matchups.');
+  }
 
   await writeFile(path.join(OUT, 'heroes.json'), JSON.stringify({ meta, heroes }));
   console.log(`Wrote heroes.json (${heroes.length} heroes, patch ${meta.patch}).`);
 
   if (SKIP_MATCHUPS) return;
 
-  // Matchups: for each hero, games and wins against every other hero (recent high-level/pro data).
+  // OpenDota matchups: games and wins against every other hero from pro/high-level matches.
+  // Used for the Pro bracket, and everywhere when STRATZ data is unavailable.
   console.log('Fetching matchups (≈1 request/sec to respect the rate limit)…');
   const matchups = {};
   let n = 0;

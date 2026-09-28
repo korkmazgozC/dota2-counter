@@ -18,7 +18,7 @@ const store = {
 const emptyFilters = () => ({ q: '', attrs: [], attack: '', roles: [], tags: [], tagMode: 'and', favOnly: false });
 
 const S = {
-  heroes: [], byId: new Map(), byKey: new Map(), meta: null, mu: null, muBase: new Map(),
+  heroes: [], byId: new Map(), byKey: new Map(), meta: null, mu: null, muCache: new Map(),
   totals: {}, stats: new Map(),
   enemy: store.get('enemy', []), ally: store.get('ally', []),
   fav: new Set(store.get('fav', [])),
@@ -71,27 +71,51 @@ const ICONS = {
 // Data loading & derived stats
 // ---------------------------------------------------------------------------
 async function loadData() {
-  const [hRes, mRes] = await Promise.all([
-    fetch('data/heroes.json'),
-    fetch('data/matchups.json').catch(() => null),
-  ]);
+  const hRes = await fetch('data/heroes.json');
   if (!hRes.ok) throw new Error('heroes.json');
   const hd = await hRes.json();
   S.meta = hd.meta;
   S.heroes = hd.heroes;
   for (const h of S.heroes) { S.byId.set(h.id, h); S.byKey.set(h.key, h); }
-  if (mRes && mRes.ok) {
-    S.mu = (await mRes.json()).matchups;
-    for (const [id, row] of Object.entries(S.mu)) {
-      let g = 0, w = 0;
-      for (const [games, wins] of Object.values(row)) { g += games; w += wins; }
-      S.muBase.set(+id, g ? w / g : 0.5);
-    }
-  }
   S.enemy = S.enemy.filter((id) => S.byId.has(id));
   S.ally = S.ally.filter((id) => S.byId.has(id));
   computeStats();
 }
+
+// Matchup datasets: STRATZ per bracket group ('all', 'hg', 'ca', 'la', 'di') with vs + with data,
+// or OpenDota's pro/high-level matchups ('pro', vs only).
+const MU_GROUP = { pub: 'all', turbo: 'all', 1: 'hg', 2: 'hg', 3: 'ca', 4: 'ca', 5: 'la', 6: 'la', 7: 'di', 8: 'di', pro: 'pro' };
+const MU_LABEL = { all: () => t('allPub'), hg: () => 'Herald–Guardian', ca: () => 'Crusader–Archon', la: () => 'Legend–Ancient', di: () => 'Divine–Immortal', pro: () => 'Pro / High MMR' };
+const muKeyFor = (b) => { const k = MU_GROUP[b] || 'all'; return k !== 'pro' && S.meta?.brackets?.includes(k) ? k : 'pro'; };
+
+async function fetchMatchups(key) {
+  if (S.muCache.has(key)) return S.muCache.get(key);
+  const res = await fetch(key === 'pro' ? 'data/matchups.json' : `data/matchups-${key}.json`);
+  if (!res.ok) throw new Error(`matchups ${key}`);
+  const raw = (await res.json()).matchups;
+  const data = { key, v: {}, w: {}, base: new Map() };
+  for (const [id, row] of Object.entries(raw)) {
+    data.v[id] = row.v || row; // OpenDota files store the vs map directly
+    data.w[id] = row.w || {};
+    let g = 0, wins = 0;
+    for (const [games, won] of Object.values(data.v[id])) { g += games; wins += won; }
+    data.base.set(+id, g ? wins / g : 0.5);
+  }
+  S.muCache.set(key, data);
+  return data;
+}
+
+async function ensureMatchups() {
+  const key = muKeyFor(S.bracket);
+  try {
+    S.mu = await fetchMatchups(key);
+  } catch (err) {
+    console.warn(err);
+    if (key !== 'pro') S.mu = await fetchMatchups('pro').catch(() => null);
+  }
+}
+
+const hasSynergy = () => !!S.mu && Object.values(S.mu.w).some((r) => Object.keys(r).length);
 
 function rawBracket(h, b) {
   const s = h.stats;
@@ -140,32 +164,47 @@ function computeStats() {
 const statOf = (id, b = S.bracket) => S.stats.get(b)?.get(id) || { wr: 0, pr: 0, picks: 0, tier: '–', z: -9 };
 const bracketAvailable = (b) => (S.totals[b] || 0) > 50;
 
+const clampWr = (x) => Math.min(0.9, Math.max(0.1, x));
+
 // Advantage of hero `a` when facing hero `b`, in win-rate points (0.03 = +3%).
 function advantage(a, b) {
   if (!S.mu || a === b) return { adv: 0, games: 0 };
   let games = 0, wins = 0;
-  const row = S.mu[a]?.[b];
+  const row = S.mu.v[a]?.[b];
   if (row) { [games, wins] = row; } else {
-    const rev = S.mu[b]?.[a];
+    const rev = S.mu.v[b]?.[a];
     if (rev) { games = rev[0]; wins = rev[0] - rev[1]; }
   }
-  const baseA = S.muBase.get(a) ?? 0.5, baseB = S.muBase.get(b) ?? 0.5;
-  const expected = Math.min(0.9, Math.max(0.1, 0.5 + (baseA - 0.5) - (baseB - 0.5)));
+  const baseA = S.mu.base.get(a) ?? 0.5, baseB = S.mu.base.get(b) ?? 0.5;
+  const expected = clampWr(0.5 + (baseA - 0.5) - (baseB - 0.5));
   const smoothed = (wins + SMOOTHING * expected) / (games + SMOOTHING);
   return { adv: smoothed - expected, games, wr: games ? wins / games : null };
 }
 
-function rankAgainst(targets, exclude) {
+// Synergy of hero `a` playing together with ally `b`, in win-rate points.
+function synergy(a, b) {
+  if (!S.mu || a === b) return { adv: 0, games: 0 };
+  const [games, wins] = S.mu.w[a]?.[b] || S.mu.w[b]?.[a] || [0, 0];
+  const baseA = S.mu.base.get(a) ?? 0.5, baseB = S.mu.base.get(b) ?? 0.5;
+  const expected = clampWr(baseA + baseB - 0.5);
+  const smoothed = (wins + SMOOTHING * expected) / (games + SMOOTHING);
+  return { adv: smoothed - expected, games, wr: games ? wins / games : null };
+}
+
+function rankAgainst(targets, exclude, allies = []) {
   const ex = new Set(exclude);
+  const useSyn = allies.length && hasSynergy();
   return S.heroes
     .filter((h) => !ex.has(h.id))
     .map((h) => {
       const parts = targets.map((e) => ({ id: e, ...advantage(h.id, e) }));
+      const syn = useSyn ? allies.map((a) => ({ id: a, ...synergy(h.id, a) })) : [];
       const adv = parts.reduce((a, p) => a + p.adv, 0);
+      const synSum = syn.reduce((a, p) => a + p.adv, 0);
       const st = statOf(h.id);
       const w = META_WEIGHTS[S.metaWeight] ?? META_WEIGHTS.low;
       const metaBonus = st.picks >= 20 ? (st.wr - 0.5) * w * Math.max(1, targets.length) : 0;
-      return { hero: h, parts, adv, score: adv + metaBonus, st };
+      return { hero: h, parts, syn, adv, synSum, score: adv + synSum + metaBonus, st };
     })
     .sort((x, y) => y.score - x.score);
 }
@@ -343,11 +382,12 @@ function viewCounter() {
   }
 
   // Suggestions
-  const ranked = applyFilters(rankAgainst(enemies, [...enemies, ...allies]), (r) => r.hero);
+  const ranked = applyFilters(rankAgainst(enemies, [...enemies, ...allies], allies), (r) => r.hero);
   const top = ranked.slice(0, 40);
   out += `
     <section class="card">
-      <div class="card-head"><div><h2>${t('suggestions')}</h2><p class="sub">${t('suggestionsSub')} · ${esc(bracketName(S.bracket))}</p></div></div>
+      <div class="card-head"><div><h2>${t('suggestions')}</h2><p class="sub">${t(allies.length && hasSynergy() ? 'suggestionsSubSyn' : 'suggestionsSub')}</p>
+        <p class="sub">${t('matchupData')}: <b>${S.mu?.key === 'pro' ? 'OpenDota' : 'STRATZ'} · ${esc(MU_LABEL[S.mu?.key || 'all']())}</b></p></div></div>
       <div class="toolbar"><label>${t('metaWeight')} <select class="select" data-act="metaWeight">
         ${Object.keys(META_WEIGHTS).map((k) => `<option value="${k}" ${S.metaWeight === k ? 'selected' : ''}>${t(`mw_${k}`)}</option>`).join('')}
       </select></label></div>
@@ -382,11 +422,13 @@ function suggestionRow(r, i) {
         <span class="rank-score">
           <b class="adv ${advClass(r.score)}" title="${t('score')}">${signed(r.score * 100)}</b>
           <small>${t('advantage')} ${signed(r.adv * 100)}%</small>
+          ${r.syn.length ? `<small>${t('synergy')} ${signed(r.synSum * 100)}%</small>` : ''}
           <small>WR ${r.st.picks ? pct(r.st.wr) : '–'}</small>
         </span>
       </a>
       <div class="rank-parts">
-        ${r.parts.map((p) => { const e = S.byId.get(p.id); return `<span class="part ${advClass(p.adv)}" title="${esc(e.name)} · ${p.games} ${t('games')}"><img src="${heroIcon(e)}" alt="">${signed(p.adv * 100)}${p.games < 15 ? '<i class="low">*</i>' : ''}</span>`; }).join('')}
+        ${r.parts.map((p) => { const e = S.byId.get(p.id); return `<span class="part ${advClass(p.adv)}" title="${t('vs')} ${esc(e.name)} · ${p.games.toLocaleString()} ${t('games')}"><img src="${heroIcon(e)}" alt="">${signed(p.adv * 100)}${p.games < 15 ? '<i class="low">*</i>' : ''}</span>`; }).join('')}
+        ${r.syn.map((p) => { const a = S.byId.get(p.id); return `<span class="part syn ${advClass(p.adv)}" title="${t('with')} ${esc(a.name)} · ${p.games.toLocaleString()} ${t('games')}"><img src="${heroIcon(a)}" alt="">${signed(p.adv * 100)}</span>`; }).join('')}
         <button class="mini-btn" data-act="addAlly" data-id="${h.id}" ${allyFull ? 'disabled' : ''}>${ICONS.plus}${t('addToAlly')}</button>
       </div>
     </li>`;
@@ -523,6 +565,7 @@ function viewHero(key) {
   const vs = others.map((o) => ({ hero: o, ...advantage(o.id, h.id) }));
   const counters = [...vs].sort((a, b) => b.adv - a.adv).slice(0, 10);
   const goodVs = [...vs].sort((a, b) => a.adv - b.adv).slice(0, 10);
+  const mates = hasSynergy() ? others.map((o) => ({ hero: o, ...synergy(h.id, o.id) })).sort((a, b) => b.adv - a.adv).slice(0, 10) : [];
   const [pt, wt] = h.stats.pubTrend;
   const wrTrend = pt.map((p, i) => (p ? wt[i] / p : 0));
   const brs = ['1', '2', '3', '4', '5', '6', '7', '8'].filter(bracketAvailable);
@@ -565,9 +608,10 @@ function viewHero(key) {
     </section>
 
     ${S.mu ? `<section class="card two-col">
-      <div><h2>${t('counteredBy')}</h2><ol class="mini-list">${counters.map((r) => `<li><a href="#/hero/${r.hero.key}"><img loading="lazy" src="${heroIcon(r.hero)}" alt="">${esc(r.hero.name)}</a><b class="adv ${advClass(r.adv)}">${signed(r.adv * 100)}%</b><small>${r.games} ${t('games')}</small></li>`).join('')}</ol></div>
-      <div><h2>${t('goodAgainst')}</h2><ol class="mini-list">${goodVs.map((r) => `<li><a href="#/hero/${r.hero.key}"><img loading="lazy" src="${heroIcon(r.hero)}" alt="">${esc(r.hero.name)}</a><b class="adv ${advClass(-r.adv)}">${signed(-r.adv * 100)}%</b><small>${r.games} ${t('games')}</small></li>`).join('')}</ol></div>
-      <p class="note">${t('matchupNote')}</p>
+      <div><h2>${t('counteredBy')}</h2><ol class="mini-list">${counters.map((r) => `<li><a href="#/hero/${r.hero.key}"><img loading="lazy" src="${heroIcon(r.hero)}" alt="">${esc(r.hero.name)}</a><b class="adv ${advClass(r.adv)}">${signed(r.adv * 100)}%</b><small>${r.games.toLocaleString()} ${t('games')}</small></li>`).join('')}</ol></div>
+      <div><h2>${t('goodAgainst')}</h2><ol class="mini-list">${goodVs.map((r) => `<li><a href="#/hero/${r.hero.key}"><img loading="lazy" src="${heroIcon(r.hero)}" alt="">${esc(r.hero.name)}</a><b class="adv ${advClass(-r.adv)}">${signed(-r.adv * 100)}%</b><small>${r.games.toLocaleString()} ${t('games')}</small></li>`).join('')}</ol></div>
+      ${mates.length ? `<div><h2>${t('bestTeammates')}</h2><ol class="mini-list">${mates.map((r) => `<li><a href="#/hero/${r.hero.key}"><img loading="lazy" src="${heroIcon(r.hero)}" alt="">${esc(r.hero.name)}</a><b class="adv ${advClass(r.adv)}">${signed(r.adv * 100)}%</b><small>${r.games.toLocaleString()} ${t('games')}</small></li>`).join('')}</ol></div>` : ''}
+      <p class="note">${t('matchupData')}: ${S.mu.key === 'pro' ? 'OpenDota' : 'STRATZ'} · ${esc(MU_LABEL[S.mu.key]())}. ${t('matchupNote')}</p>
     </section>` : ''}
 
     <section class="card">
@@ -754,7 +798,10 @@ document.addEventListener('keydown', (e) => {
 
 document.addEventListener('change', (e) => {
   const el = e.target;
-  if (el.dataset.act === 'bracket') { S.bracket = el.value; store.set('bracket', S.bracket); render({ keepScroll: true }); }
+  if (el.dataset.act === 'bracket') {
+    S.bracket = el.value; store.set('bracket', S.bracket);
+    ensureMatchups().then(() => render({ keepScroll: true }));
+  }
   if (el.dataset.act === 'metaSort') { S.metaSort = el.value; store.set('metaSort', S.metaSort); render({ keepScroll: true }); }
   if (el.dataset.act === 'metaWeight') { S.metaWeight = el.value; store.set('metaWeight', S.metaWeight); render({ keepScroll: true }); }
   if (el.dataset.act === 'minPr') { S.minPr = +el.value; store.set('minPr', S.minPr); render({ keepScroll: true }); }
@@ -786,6 +833,7 @@ async function boot() {
     return;
   }
   if (!bracketAvailable(S.bracket)) S.bracket = 'pub';
+  await ensureMatchups();
   applyStaticText();
   handleRouteParams();
   render();

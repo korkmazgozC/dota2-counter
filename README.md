@@ -4,7 +4,8 @@ Dota 2 için **counter pick**, **meta tier listesi** ve **yetenek özelliklerine
 
 ## Özellikler
 
-- **Counter pick**: Rakibin seçtiği 1–5 heroyu ekle; tüm rakiplere karşı toplam avantaja göre sıralı öneriler al. Her öneride rakip bazında avantaj dökümü var.
+- **Counter pick**: Rakibin seçtiği 1–5 heroyu ekle; tüm rakiplere karşı toplam avantaja göre sıralı öneriler al. Her öneride rakip bazında avantaj dökümü var. Eşleşmeler seçili lige göre (Herald–Guardian, Crusader–Archon, Legend–Ancient, Divine–Immortal) milyonlarca maçtan hesaplanır.
+- **Takım sinerjisi**: Kendi takımını eklersen öneriler takım arkadaşlarınla uyumu da hesaba katar; hero sayfasında en iyi takım arkadaşları listelenir.
 - **Meta ağırlığı**: Önerilerde seçili ligdeki win rate'in ne kadar etkili olacağını seç (Yok / Düşük / Orta / Yüksek).
 - **Takım analizi**: Kendi takımını ekle; stun, kurtarma, iyileştirme, alan kontrolü gibi eksikleri ve melee/ranged dengesini gör.
 - **Takımına karşı tehlikeli herolar**: Ban veya dikkat önerileri.
@@ -26,11 +27,13 @@ Dota 2 için **counter pick**, **meta tier listesi** ve **yetenek özelliklerine
 1. Repo → **Settings → Pages** → *Source*: **Deploy from a branch**, *Branch*: `main` / `(root)` → Save.
 2. Birkaç dakika sonra site `https://<kullanıcı-adı>.github.io/<repo-adı>/` adresinde yayında olur.
 3. **Actions** sekmesinde *Update hero data* workflow'u her gün verileri yeniler. İlk seferde *Run workflow* ile elle de çalıştırabilirsin.
-   - İsteğe bağlı: daha hızlı güncelleme için `OPENDOTA_API_KEY` adında bir repo secret'ı ekleyebilirsin.
+   - Lig bazlı counter + sinerji verisi için `STRATZ_TOKEN` repo secret'ı gerekir (Settings → Secrets and variables → Actions). Token hiçbir dosyada tutulmaz.
+   - İsteğe bağlı: daha hızlı güncelleme için `OPENDOTA_API_KEY` secret'ı eklenebilir.
 
 ## Veri
 
-- Kaynak: [OpenDota API](https://docs.opendota.com/) — `heroStats` (son 7 günün pub maçları, lig bazında), `heroes/{id}/matchups` (yüksek seviye maçlardan eşleşmeler), yetenek sabitleri.
+- [OpenDota API](https://docs.opendota.com/) — `heroStats` (son 7 günün pub maçları, lig bazında), yetenek sabitleri ve Pro ligi için `heroes/{id}/matchups`.
+- [STRATZ API](https://stratz.com/api) — lig gruplarına göre hero-hero eşleşme (`vs`) ve sinerji (`with`) verileri, güncel patch sürümü. Token yoksa uygulama otomatik olarak OpenDota eşleşmelerine düşer.
 - **Avantaj** hesabı: Bir heronun rakibe karşı win rate'i, iki heronun genel güçlerinden beklenen win rate ile karşılaştırılır. Az maçlı eşleşmeler Bayes yumuşatması ile beklenen değere çekilir (az veri olanlar `*` ile işaretlenir).
 - **Yetenek etiketleri** (stun/root/slow…) `data/overrides.json` içinde her hero için elle doğrulanmıştır; yetenek bazındaki etiketler açıklamalardan otomatik çıkarılıp bu listeyle sınırlandırılır. Yeni hero geldiğinde bu dosyaya bir satır eklemek yeterli.
 
@@ -39,7 +42,7 @@ Dota 2 için **counter pick**, **meta tier listesi** ve **yetenek özelliklerine
 Bağımlılık yok, derleme adımı yok.
 
 ```bash
-node scripts/build-data.mjs   # verileri OpenDota'dan çek (~2.5 dk)
+node scripts/build-data.mjs   # verileri çek (~3 dk). STRATZ için proje köküne .env: STRATZ_TOKEN=... (git'e girmez)
 node scripts/serve.mjs        # http://localhost:5173
 node scripts/make-icons.mjs   # ikonları yeniden üret
 ```
@@ -49,7 +52,8 @@ node scripts/make-icons.mjs   # ikonları yeniden üret
 ```
 index.html, css/, js/          Uygulama (vanilla JS, ES modules)
 data/heroes.json               Hero istatistikleri + yetenekler + etiketler
-data/matchups.json             Hero-hero eşleşmeleri
+data/matchups-*.json           STRATZ lig bazlı eşleşme + sinerji (all/hg/ca/la/di)
+data/matchups.json             OpenDota eşleşmeleri (Pro)
 data/overrides.json            Elle doğrulanmış etiketler
 sw.js, manifest.webmanifest    PWA (çevrimdışı + ana ekrana ekleme)
 scripts/                       Veri, ikon ve geliştirme sunucusu scriptleri
