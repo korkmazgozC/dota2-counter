@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Dota 2 Counter</title>
   <meta name="description" content="Dota 2 counter pick, meta tier list ve stun/root/slow filtreli hero rehberi — mevcut patch verileriyle.">
-  <meta name="theme-color" content="#0f1117">
+  <meta name="theme-color" content="#0a0c11">
   <meta name="color-scheme" content="dark">
 
   <!-- PWA / Add to Home Screen -->
@@ -18,33 +18,51 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="D2 Counter">
 
-  <!-- Social preview -->
   <meta property="og:title" content="Dota 2 Counter">
   <meta property="og:description" content="Counter pick, meta ve hero filtreleri — mevcut patch.">
   <meta property="og:image" content="icons/icon-512.png">
 
   <link rel="preconnect" href="https://cdn.cloudflare.steamstatic.com" crossorigin>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="#/counter">
-      <img src="icons/icon.svg" alt="" width="28" height="28">
-      <span data-i18n="appName">Dota 2 Counter</span>
-    </a>
-    <span id="patchBadge" class="badge"></span>
-    <div id="bracketTop" class="top-bracket"></div>
-  </header>
-  <div class="offline-bar" data-i18n="offline"></div>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#/counter">
+        <img src="icons/icon.svg" alt="" width="30" height="30">
+        <span><b>Dota 2</b> Counter</span>
+      </a>
+      <nav id="sideNav" class="side-nav" aria-label="Main"></nav>
+      <div id="sideFoot" class="side-foot"></div>
+    </aside>
 
-  <main id="view" class="view">
-    <section class="card center loading"><div class="spinner"></div><p data-i18n="loading">Veriler yükleniyor…</p></section>
-  </main>
+    <div class="main">
+      <header class="topbar">
+        <a class="brand mobile-only" href="#/counter" aria-label="Dota 2 Counter"><img src="icons/icon.svg" alt="" width="28" height="28"></a>
+        <div class="titles">
+          <h1 id="pageTitle">Dota 2 Counter</h1>
+          <p id="pageSub"></p>
+        </div>
+        <div id="topBracket" class="top-bracket"></div>
+      </header>
+      <div class="offline-bar" id="offlineText"></div>
 
-  <nav class="nav" aria-label="Main"></nav>
+      <main id="view" class="view">
+        <div class="skeleton-layout" aria-busy="true">
+          <div class="sk sk-panel"></div>
+          <div class="sk sk-panel tall"></div>
+        </div>
+      </main>
+    </div>
+  </div>
 
-  <div id="sheet" class="sheet" hidden data-act="closeSheet">
-    <div class="sheet-panel" role="dialog" aria-modal="true"></div>
+  <nav id="tabbar" class="tabbar" aria-label="Main"></nav>
+
+  <div id="modal" class="modal" hidden data-act="closeModal">
+    <div class="modal-panel" role="dialog" aria-modal="true"></div>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 

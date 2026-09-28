@@ -1,11 +1,11 @@
 // Service worker: network-first app & data (works offline from cache), cache-first hero/item images.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL = `shell-${VERSION}`;
 const DATA = 'data';
 const IMAGES = 'images';
 
 const SHELL_FILES = [
-  './', 'index.html', 'css/app.css', 'js/app.js', 'js/i18n.js', 'manifest.webmanifest',
+  './', 'index.html', 'css/app.css', 'js/app.js', 'js/data.js', 'js/i18n.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/apple-touch-icon.png',
 ];
 
@@ -55,7 +55,7 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.hostname.endsWith('steamstatic.com')) { e.respondWith(cacheFirst(req, IMAGES)); return; }
+  if (url.hostname.endsWith('steamstatic.com') || url.hostname.endsWith('gstatic.com') || url.hostname === 'fonts.googleapis.com') { e.respondWith(cacheFirst(req, IMAGES)); return; }
   if (url.origin !== location.origin) return;
   if (url.pathname.includes('/data/')) { e.respondWith(networkFirst(req, DATA)); return; }
   // App files are tiny: always try the network so updates show up on the next launch; fall back offline.
